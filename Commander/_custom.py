@@ -1,4 +1,4 @@
-from . import _game
+from . import _game, _positions
 from ._game import popup
 
 from mods_base import (
@@ -32,7 +32,8 @@ try:
     with legacy_compat():
         from unrealsdk import *
 except ImportError:
-    pass
+    # Without legacy compat, imported commands still run, minus its names.
+    from contextlib import nullcontext as legacy_compat
 """,
     legacy_locals,
 )
@@ -122,11 +123,17 @@ class CommandKeybindType(KeybindType):
         if command.startswith("py "):
             code = compile(command[3:], "<string>", "exec")
             if command.startswith("py with legacy_compat():"):
-                callback = lambda: exec(code, main_globals, legacy_locals)
+                run = lambda: exec(code, main_globals, legacy_locals)
             else:
-                callback = lambda: exec(code, main_globals)
+                run = lambda: exec(code, main_globals)
         else:
-            callback = lambda: _game.console_command(command)
+            run = lambda: _game.console_command(command)
+
+        def callback() -> None:
+            # A held position keybind can be using this number key as a
+            # position number.
+            if not _positions.captures_key(self.key):
+                run()
 
         super().__init__(
             identifier=name,
@@ -178,9 +185,8 @@ def load_keybinds() -> None:
             command_body += line
 
         else:
-            keybind = CommandKeybindType(command_name, command_body)
-            keybind.enable()
-            keybinds.append(keybind)
+            # Enabled along with the mod, not here: the mod may be disabled.
+            keybinds.append(CommandKeybindType(command_name, command_body))
 
             execute_state = reading_name
 

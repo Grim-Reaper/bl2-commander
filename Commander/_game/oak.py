@@ -169,3 +169,14 @@ def get_freeze() -> bool:
 
 def set_freeze(should_freeze: bool) -> None:
     set_speed(0 if should_freeze else 1)
+
+
+def is_key_pressed(key: str) -> bool:
+    return True
+
+
+has_damage_numbers = False
+
+
+def set_damage_numbers(should_show: bool) -> None:
+    pass

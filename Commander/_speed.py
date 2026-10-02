@@ -46,7 +46,7 @@ if networking:
         if _client_speed.value:
             _broadcast_game_freeze(should_freeze)
         else:
-            player = _server_request_game_speed.sender
+            player = _server_request_game_freeze.sender
             _client_popup(player, f"Only session host may toggle game freeze")
 
     @networking.broadcast.json_message
@@ -202,8 +202,57 @@ def _worldfreeze_callback(event: EInputEvent) -> KeybindBlockSignal:
     return Block
 
 
+@keybind(
+    identifier="Halve Game Speed",
+    key=None,
+    description="In game, tap to halve the game speed.",
+)
+def _halve_keybind() -> None:
+    speed = _game.get_speed()
+    if speed > 1.0 / 32.0:
+        set_speed(speed / 2.0)
+
+
+@keybind(
+    identifier="Double Game Speed",
+    key=None,
+    description="In game, tap to double the game speed.",
+)
+def _double_keybind() -> None:
+    speed = _game.get_speed()
+    if 0 < speed < 32.0:
+        set_speed(speed * 2.0)
+
+
+@keybind(
+    identifier="Reset Game Speed",
+    key=None,
+    description="In game, tap to return the game speed to normal.",
+)
+def _reset_keybind() -> None:
+    if _game.get_speed() != 1:
+        set_speed(1.0)
+    else:
+        _game.popup("Game speed: 1")
+
+
+@keybind(
+    identifier="Toggle World Freeze",
+    key=None,
+    description=(
+        "In game, tap to freeze or unfreeze everything except the players."
+    ),
+)
+def _freeze_keybind() -> None:
+    toggle_freeze()
+
+
 keybinds: list[KeybindType] = [
     _speed_key_callback,
+    _halve_keybind,
+    _double_keybind,
+    _reset_keybind,
+    _freeze_keybind,
     _speedup_callback,
     _speeddown_callback,
     _worldfreeze_callback,

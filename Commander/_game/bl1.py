@@ -12,6 +12,9 @@ except ImportError:
     TrainingBox = None
 
 
+has_damage_numbers = False
+
+
 default_commands = """\
 Toggle HUD:
 py get_pc().myHUD.ToggleHUD()

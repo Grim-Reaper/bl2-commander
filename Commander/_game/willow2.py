@@ -1,7 +1,7 @@
-from unrealsdk import find_all, find_class, find_enum, make_struct
+from unrealsdk import find_all, find_class, find_enum, find_object, make_struct
 from unrealsdk.unreal import UObject
 
-from mods_base import ENGINE, get_pc
+from mods_base import ENGINE, ObjectFlags, get_pc
 
 from .. import _positions
 
@@ -108,6 +108,11 @@ def set_player_pc_position(
         player_pc.Pawn.Velocity = make_struct("Vector")
 
 
+def set_actor_position(position: Position, actor: UObject) -> None:
+    actor.Location = position.make_vector()
+    actor.Rotation = position.make_rotator()
+
+
 def get_spawns() -> Sequence[Sequence[Position]]:
     fast_travels: list[Position] = []
     level_transitions: list[Position] = []
@@ -119,6 +124,7 @@ def get_spawns() -> Sequence[Sequence[Position]]:
     for station in find_all("TravelStation", False):
         if (
             station == station.Class.ClassDefaultObject
+            or station.TeleportDest is None
             or len(station.TeleportDest.ExitPoints) < 1
         ):
             continue
@@ -152,3 +158,49 @@ def set_freeze(should_freeze: bool) -> None:
 
 def get_freeze() -> bool:
     return ENGINE.GetCurrentWorldInfo().bPlayersOnly
+
+
+def is_key_pressed(key: str) -> bool:
+    player_input = get_pc().PlayerInput
+    if player_input is None:
+        return False
+
+    try:
+        pressed_keys = player_input.PressedKeys
+    except AttributeError:
+        return True
+    return key in pressed_keys
+
+
+has_damage_numbers = True
+
+_damage_number_emitters: list[UObject | None] = []
+"""The damage number particle system's own emitters, captured once."""
+
+
+def set_damage_numbers(should_show: bool) -> None:
+    try:
+        system = find_object(
+            "ParticleSystem",
+            "FX_CHAR_Damage_Matrix.Particles.Part_Dynamic_Number",
+        )
+    except ValueError:
+        return
+
+    if not _damage_number_emitters:
+        emitters = list(system.Emitters)
+        if len(emitters) < 2 or None in emitters[:2]:
+            return
+
+        # The first two emitters throw out the numbers. While they are out of
+        # the array nothing else references them, so keep them from being
+        # garbage collected.
+        for emitter in emitters[:2]:
+            emitter.ObjectFlags |= ObjectFlags.KEEP_ALIVE
+        _damage_number_emitters.extend(emitters)
+
+    system.Emitters = (
+        _damage_number_emitters
+        if should_show
+        else [None, None, *_damage_number_emitters[2:]]
+    )

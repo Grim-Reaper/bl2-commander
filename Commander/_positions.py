@@ -11,7 +11,13 @@ from mods_base.keybinds import (
     KeybindBlockSignal,
     KeybindType,
 )
-from mods_base import BaseOption, HiddenOption, BoolOption, get_pc
+from mods_base import (
+    BaseOption,
+    HiddenOption,
+    BoolOption,
+    SliderOption,
+    get_pc,
+)
 
 try:
     import networking
@@ -336,7 +342,34 @@ _positions_dict = HiddenOption[
     ]  # pyright: ignore[reportInvalidTypeArguments]
 ]("Positions", dict())
 
-options: list[BaseOption] = [_positions_dict]
+_teleport_distance = SliderOption(
+    # Kept from Commander 2.6, so its saved value carries over.
+    identifier="Client Teleporting Distance",
+    value=250,
+    min_value=250,
+    max_value=25000,
+    step=250,
+    display_name="Teleport Distance",
+    description=(
+        "How far a tap of Teleport Forward or Teleport Backward moves you."
+        " Holding either and pressing a number key moves you two to eleven"
+        " times as far."
+    ),
+)
+
+_selectable_positions = SliderOption(
+    identifier="Selectable Positions",
+    value=6,
+    min_value=1,
+    max_value=9,
+    description="How many numbered positions Select Position cycles through.",
+)
+
+options: list[BaseOption] = [
+    _positions_dict,
+    _teleport_distance,
+    _selectable_positions,
+]
 
 
 _map_name = ""
@@ -349,7 +382,66 @@ _save_held = False
 _restore_held = False
 _spawn_held = False
 _forward_held = False
+_backward_held = False
 _num_pressed = False
+
+_selected = 1
+"""The numbered position Select Position has picked."""
+
+_number_keys: set[str] = set()
+
+
+def _held_modifiers() -> list[KeybindType]:
+    """
+    The position keybinds being held down, which turn the number keys into
+    position numbers.
+
+    A key counts only while the game still has it pressed: a release the game
+    never saw (such as one while the window was in the background) must not
+    leave the number keys taken over.
+    """
+    return [
+        modifier
+        for modifier, held in (
+            (save_keybind, _save_held),
+            (restore_keybind, _restore_held),
+            (spawn_keybind, _spawn_held),
+            (forward_keybind, _forward_held),
+            (backward_keybind, _backward_held),
+        )
+        if held and modifier.key and _game.is_key_pressed(modifier.key)
+    ]
+
+
+def captures_key(key: str | None) -> bool:
+    """
+    Whether a held position keybind is using this number key as a position
+    number right now, so other keybinds on the key should do nothing.
+    """
+    if key not in _number_keys:
+        return False
+
+    held = _held_modifiers()
+    return bool(held) and key not in (modifier.key for modifier in held)
+
+
+def _has_pawn() -> bool:
+    return get_pc().Pawn is not None
+
+
+def _tap_slot() -> int:
+    """The saved position a tap of Save Position or Restore Position uses."""
+    return _selected if select_keybind.key else 10
+
+
+def _slot_name(slot: int) -> str:
+    return "Position" if slot == 10 else f"Position {slot}"
+
+
+def _teleport_forward(distance: float) -> None:
+    position = Position.from_player_pc()
+    position.shift_forward(distance)
+    _teleport_position(position, None)
 
 
 def _player_at_index(index: int) -> UObject | None:
@@ -462,6 +554,8 @@ if networking:
             return
 
         _update_map_spawns()
+        if not _map_spawn_count:
+            return
 
         if index >= _map_spawn_count:
             index = 0
@@ -559,7 +653,8 @@ else:
     key="Period",
     description=(
         "In game, tap to save your current position. Hold and press a number"
-        " key to save a position for that number."
+        " key to save a position for that number. While Select Position has a"
+        " key, a tap saves to the position it selected."
     ),
     event_filter=None,
 )
@@ -570,9 +665,10 @@ def save_keybind(event: EInputEvent) -> KeybindBlockSignal:
         _save_held = True
 
     elif event == EInputEvent.IE_Released:
-        if not _num_pressed:
-            saved_positions[10] = Position.from_player_pc()
-            _game.popup(f"Saved Position")
+        if not _num_pressed and _has_pawn():
+            slot = _tap_slot()
+            saved_positions[slot] = Position.from_player_pc()
+            _game.popup(f"Saved {_slot_name(slot)}")
 
         _save_held = False
         if not (_spawn_held or _restore_held):
@@ -583,8 +679,9 @@ def save_keybind(event: EInputEvent) -> KeybindBlockSignal:
     identifier="Restore Position",
     key="Comma",
     description=(
-        "In game, tap this key to save your current position. Hold and press a"
-        " number key to save a position for that number."
+        "In game, tap to teleport to your saved position. Hold and press a"
+        " number key to teleport to your saved position for that number. While"
+        " Select Position has a key, a tap uses the position it selected."
     ),
     event_filter=None,
 )
@@ -595,11 +692,12 @@ def restore_keybind(event: EInputEvent) -> KeybindBlockSignal:
         _restore_held = True
 
     elif event == EInputEvent.IE_Released:
-        if not _num_pressed:
-            if position := saved_positions[10]:
-                _teleport_position(position, "Restored Position")
+        if not _num_pressed and _has_pawn():
+            slot = _tap_slot()
+            if position := saved_positions[slot]:
+                _teleport_position(position, f"Restored {_slot_name(slot)}")
             else:
-                _game.popup(f"Position Not Saved")
+                _game.popup(f"{_slot_name(slot)} Not Saved")
 
         _restore_held = False
         if not (_spawn_held or _save_held):
@@ -607,10 +705,26 @@ def restore_keybind(event: EInputEvent) -> KeybindBlockSignal:
 
 
 @keybind(
+    identifier="Select Position",
+    key=None,
+    description=(
+        "In game, tap to pick the numbered position that a tap of Save"
+        " Position or Restore Position uses. While this has no key, a tap uses"
+        " your unnumbered position."
+    ),
+)
+def select_keybind() -> None:
+    global _selected
+
+    _selected = _selected % round(_selectable_positions.value) + 1
+    _game.popup(f"Selected Position {_selected}")
+
+
+@keybind(
     identifier="Teleport to Spawn",
     description=(
-        "In game, tap to teleport to your saved position. Hold and press a"
-        " number key to teleport to your saved position for that number."
+        "In game, tap to cycle through points of interest in the map. Hold and"
+        " press a number key to teleport to a specific point of interest."
     ),
     key="Slash",
     event_filter=None,
@@ -622,13 +736,14 @@ def spawn_keybind(event: EInputEvent) -> KeybindBlockSignal:
         _spawn_held = True
 
     elif event == EInputEvent.IE_Released:
-        if not _num_pressed:
+        if not _num_pressed and _has_pawn():
             _update_map_spawns()
             if _next_spawn_index >= _map_spawn_count:
                 _next_spawn_index = 0
 
-            _teleport_spawn(_next_spawn_index)
-            _next_spawn_index += 1
+            if _map_spawn_count:
+                _teleport_spawn(_next_spawn_index)
+                _next_spawn_index += 1
 
         _spawn_held = False
         if not (_restore_held or _save_held):
@@ -651,23 +766,46 @@ def forward_keybind(event: EInputEvent) -> KeybindBlockSignal:
         _forward_held = True
 
     elif event == EInputEvent.IE_Released:
-        if not _num_pressed:
-            position = Position.from_player_pc()
-            position.shift_forward(250)
-            _teleport_position(position, None)
+        if not _num_pressed and _has_pawn():
+            _teleport_forward(_teleport_distance.value)
 
         _forward_held = False
+        _num_pressed = False
+
+
+@keybind(
+    identifier="Teleport Backward",
+    description=(
+        "In game, tap to teleport backward a short distance. Hold and press a"
+        " number key to teleport backward further distances."
+    ),
+    key="Down",
+    event_filter=None,
+)
+def backward_keybind(event: EInputEvent) -> KeybindBlockSignal:
+    global _backward_held, _num_pressed
+
+    if event == EInputEvent.IE_Pressed:
+        _backward_held = True
+
+    elif event == EInputEvent.IE_Released:
+        if not _num_pressed and _has_pawn():
+            _teleport_forward(-_teleport_distance.value)
+
+        _backward_held = False
         _num_pressed = False
 
 
 keybinds: list[KeybindType] = [
     save_keybind,
     restore_keybind,
+    select_keybind,
     spawn_keybind,
     forward_keybind,
+    backward_keybind,
 ]
 
-for index, key in enumerate(
+for index, number in enumerate(
     (
         "Zero",
         "One",
@@ -681,48 +819,62 @@ for index, key in enumerate(
         "Nine",
     )
 ):
+    for key in (number, "NumPad" + number):
 
-    def callback(
-        event: EInputEvent,
-        index: int = index,
-        shifted_index: int = index - 1 if index else 9,
-        forward_distance: int = 250 * (index + 1 if index else 11),
-    ) -> KeybindBlockSignal:
-        global _num_pressed, _next_spawn_index
+        def callback(
+            event: EInputEvent,
+            key: str = key,
+            index: int = index,
+            shifted_index: int = index - 1 if index else 9,
+            distance_multiple: int = index + 1 if index else 11,
+        ) -> KeybindBlockSignal:
+            global _num_pressed, _next_spawn_index
 
-        if not (_save_held or _restore_held or _spawn_held or _forward_held):
-            return
+            held = _held_modifiers()
+            # A number key bound to a held keybind is that keybind's own key,
+            # not a position number.
+            if not held or key in (modifier.key for modifier in held):
+                return
 
-        if event == EInputEvent.IE_Pressed:
-            _num_pressed = True
+            if event == EInputEvent.IE_Pressed:
+                _num_pressed = True
+                if not _has_pawn():
+                    return Block
 
-            if _restore_held and _spawn_held:
-                _teleport_player(shifted_index)
+                if restore_keybind in held and spawn_keybind in held:
+                    _teleport_player(shifted_index)
 
-            elif _save_held:
-                saved_positions[index] = Position.from_player_pc()
-                _game.popup(f"Saved Position {index}")
+                elif save_keybind in held:
+                    saved_positions[index] = Position.from_player_pc()
+                    _game.popup(f"Saved Position {index}")
 
-            elif _restore_held:
-                if position := saved_positions[index]:
-                    _teleport_position(position, f"Restored Position {index}")
-                else:
-                    _game.popup(f"Position {index} Not Saved")
+                elif restore_keybind in held:
+                    if position := saved_positions[index]:
+                        _teleport_position(
+                            position, f"Restored Position {index}"
+                        )
+                    else:
+                        _game.popup(f"Position {index} Not Saved")
 
-            elif _spawn_held:
-                _update_map_spawns()
-                if shifted_index < _map_spawn_count:
-                    _teleport_spawn(shifted_index)
-                    _next_spawn_index = shifted_index + 1
+                elif spawn_keybind in held:
+                    _update_map_spawns()
+                    if shifted_index < _map_spawn_count:
+                        _teleport_spawn(shifted_index)
+                        _next_spawn_index = shifted_index + 1
 
-            elif _forward_held:
-                position = Position.from_player_pc()
-                position.shift_forward(forward_distance)
-                _teleport_position(position, None)
+                elif forward_keybind in held:
+                    _teleport_forward(
+                        _teleport_distance.value * distance_multiple
+                    )
 
-        return Block
+                elif backward_keybind in held:
+                    _teleport_forward(
+                        -_teleport_distance.value * distance_multiple
+                    )
 
-    for key in (key, "NumPad" + key):
+            return Block
+
+        _number_keys.add(key)
         keybinds.append(
             keybind(
                 identifier=key,

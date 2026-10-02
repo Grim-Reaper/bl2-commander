@@ -17,7 +17,7 @@ __all__ = (
 )
 
 
-from . import _game, _positions, _speed, _custom
+from . import _game, _positions, _speed, _damage, _custom
 
 import mods_base
 
@@ -36,7 +36,7 @@ class CommanderModule(Protocol):
     keybinds: list[mods_base.KeybindType]
 
 
-modules: Sequence[CommanderModule] = (_positions, _speed, _custom)
+modules: Sequence[CommanderModule] = (_positions, _speed, _damage, _custom)
 
 
 class Commander(mods_base.Mod):
@@ -66,6 +66,9 @@ class Commander(mods_base.Mod):
 
         if _custom._legacy_commands in _custom.options:
             _custom.options.remove(_custom._legacy_commands)
+        # The second load above read the old commands back from the file; a
+        # later reload must not import them over Commander.txt again.
+        _custom._legacy_commands.value = {}
         self.options = tuple(
             chain.from_iterable(module.options for module in modules)
         )
@@ -103,12 +106,16 @@ class Commander(mods_base.Mod):
             _positions._positions_dict.value = ported_positions_dict  # pyright: ignore[reportAttributeAccessIssue]
 
         self.enable_guard = False
-        if self.should_enable:
+        if self.is_enabled:
+            # Reloaded while enabled: turn on the keybinds this load made.
+            for keybind in self.keybinds:
+                keybind.enable()
+        elif self.should_enable:
             self.enable()
 
     def enable(self) -> None:
         self.should_enable = True
-        if self.enable_guard:
+        if self.enable_guard or self.enabling_locked or self.is_enabled:
             return
 
         for module in modules:
@@ -121,6 +128,10 @@ class Commander(mods_base.Mod):
         super().enable()
 
     def disable(self, dont_update_setting: bool = False) -> None:
+        self.should_enable = False
+        if self.enabling_locked or not self.is_enabled:
+            return
+
         for module in modules:
             for key, value in vars(module).items():
                 if NetworkFunction and isinstance(value, NetworkFunction):
